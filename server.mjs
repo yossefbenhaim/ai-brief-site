@@ -12,6 +12,7 @@ const PORT = parseInt(process.env.PORT || '8088', 10)
 const BRIEFS_DIR = process.env.BRIEFS_DIR || '/home/yossef7875/.openclaw/workspace/insights/briefs'
 const TASKS_FILE = process.env.TASKS_FILE || '/home/yossef7875/.openclaw/workspace/tasks.md'
 const BASE_URL = process.env.BASE_URL || 'https://brief.byclick.co.il'
+const ANTHROPIC_FEED = process.env.ANTHROPIC_FEED || '/home/yossef7875/.openclaw/workspace/insights/anthropic-feed.json'
 const RETAIN_DAYS = parseInt(process.env.RETAIN_DAYS || '7', 10)
 const AUTH_USER = process.env.AUTH_USER || ''
 const AUTH_PASS = process.env.AUTH_PASS || ''
@@ -155,6 +156,7 @@ function renderBrief(b, allDates, activeDate) {
     <div class="brand">🔥 תדריך AI</div>
     <div class="sub">דרך העדשה שלך</div>
     <nav class="hist"><div class="hlabel">היסטוריה (7 ימים)</div>${history}</nav>
+    <a class="saved-link" href="/anthropic">🅰️ Anthropic — 7 ימים</a>
     <a class="saved-link" href="/saved">⭐ משימות שמורות</a>
     <div class="foot">Jarvis · מתעדכן כל בוקר</div>
   </aside>
@@ -167,6 +169,50 @@ function renderBrief(b, allDates, activeDate) {
 <div id="toast" class="toast"></div>
 <script>${JS}</script>
 </body></html>`
+}
+
+function loadFeed() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(ANTHROPIC_FEED, 'utf8'))
+    return Array.isArray(arr) ? arr.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')) : []
+  } catch { return [] }
+}
+
+function renderAnthropic() {
+  const items = loadFeed()
+  // group by date (already newest-first)
+  const groups = []
+  for (const it of items) {
+    let g = groups.find((x) => x.date === it.date)
+    if (!g) { g = { date: it.date, items: [] }; groups.push(g) }
+    g.items.push(it)
+  }
+  const body = groups.length ? groups.map((g) => {
+    const rows = g.items.map((it) => {
+      const saved = isSaved(it.text)
+      const who = it.who || it.handle || ''
+      const link = it.url ? ` <a href="${esc(it.url)}" target="_blank" rel="noopener">↗ מקור</a>` : ''
+      return `<li>
+        <span class="txt"><strong>${esc(who)}${it.handle && it.handle !== it.who ? ' ' + esc(it.handle) : ''}</strong> — ${inline(it.text)}${link}</span>
+        <button class="save ${saved ? 'on' : ''}" data-text="${esc(plain(it.text))}" data-date="${ddmm(it.date)}">${saved ? '✓ נשמר' : '＋ משימה'}</button>
+      </li>`
+    }).join('')
+    return `<section class="card"><h2><span class="date">📅 ${ddmm(g.date)}</span></h2><ul class="items">${rows}</ul></section>`
+  }).join('') : '<section class="card"><p class="empty">עדיין אין פריטים בחלון 7 הימים. הסורק השעתי ימלא אותם.</p></section>'
+
+  return `<!doctype html><html lang="he" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Anthropic — 7 ימים אחרונים</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>${CSS}</style></head><body>
+<div class="wrap"><main class="main full">
+  <a class="back" href="/">→ חזרה לתדריך</a>
+  <h1>🅰️ Anthropic — 7 ימים אחרונים</h1>
+  <p class="note">כל מה שחם מ-Anthropic / Claude Code (Boris, Cat Wu, Alex Albert, @AnthropicAI), מהחדש לישן, מקובץ לפי יום — כדי שתראה גם מה פספסת. מתעדכן כל שעה.</p>
+  ${body}
+</main></div>
+<div id="toast" class="toast"></div>
+<script>${JS}</script></body></html>`
 }
 
 function renderSaved() {
@@ -225,6 +271,11 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: String(e) }))
     }
+    return
+  }
+
+  if (url.pathname === '/anthropic') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(renderAnthropic())
     return
   }
 
