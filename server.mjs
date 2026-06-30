@@ -191,10 +191,15 @@ function renderAnthropic() {
     const rows = g.items.map((it) => {
       const saved = isSaved(it.text)
       const who = it.who || it.handle || ''
-      const link = it.url ? ` <a href="${esc(it.url)}" target="_blank" rel="noopener">↗ מקור</a>` : ''
-      return `<li>
-        <span class="txt"><strong>${esc(who)}${it.handle && it.handle !== it.who ? ' ' + esc(it.handle) : ''}</strong> — ${inline(it.text)}${link}</span>
-        <button class="save ${saved ? 'on' : ''}" data-text="${esc(plain(it.text))}" data-date="${ddmm(it.date)}">${saved ? '✓ נשמר' : '＋ משימה'}</button>
+      const handle = it.handle && it.handle !== it.who ? ' ' + esc(it.handle) : ''
+      const link = it.url ? `<a class="src" href="${esc(it.url)}" target="_blank" rel="noopener">↗ מקור מלא</a>` : ''
+      const deep = it.body_he ? `<p class="deep">${inline(it.body_he)}</p>` : ''
+      const lead = `<p class="lead-line">${inline(it.text)}</p>`
+      return `<li class="feed">
+        <div class="ahead"><strong>${esc(who)}${handle}</strong>
+          <button class="save ${saved ? 'on' : ''}" data-text="${esc(plain(it.text))}" data-date="${ddmm(it.date)}">${saved ? '✓ נשמר' : '＋ משימה'}</button>
+        </div>
+        ${lead}${deep}${link}
       </li>`
     }).join('')
     return `<section class="card"><h2><span class="date">📅 ${ddmm(g.date)}</span></h2><ul class="items">${rows}</ul></section>`
@@ -327,6 +332,12 @@ h1{font-size:1.7rem;font-weight:800;color:var(--deep);margin:.2em 0 .5em}
 .items li:last-child{border-bottom:0}
 .txt{flex:1}.txt a{color:var(--blue);font-weight:600}
 .date{display:inline-block;background:#eef3f9;color:var(--brown);border:1px solid var(--line);border-radius:7px;padding:0 7px;font-size:.78rem;font-weight:700;white-space:nowrap;margin-inline-start:2px}
+.feed{flex-direction:column;align-items:stretch;gap:6px}
+.ahead{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.ahead strong{color:var(--deep);font-size:1.02rem}
+.lead-line{margin:2px 0;font-weight:600}
+.deep{margin:2px 0;color:var(--ink);line-height:1.75;background:#fafbfd;border:1px solid var(--line);border-radius:10px;padding:10px 13px}
+.src{font-size:.85rem;color:var(--blue);font-weight:600;text-decoration:none}
 .save{flex:0 0 auto;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:999px;padding:4px 12px;font-family:inherit;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap;transition:.15s}
 .save:hover{background:var(--blue);color:#fff}
 .save.on{background:var(--brown);border-color:var(--brown);color:#fff}
