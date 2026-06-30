@@ -27,6 +27,9 @@ function inline(s) {
   h = h.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>')
   h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  // date chips — only dates in parens (DD.MM[.YY]) or ISO; avoids matching version numbers like "4.8"
+  h = h.replace(/\((\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)\)/g, '<span class="date">📅 $1</span>')
+  h = h.replace(/\b(\d{4}-\d{2}-\d{2})\b/g, '<span class="date">📅 $1</span>')
   return h
 }
 // plain text of a bullet (strip markdown) — used as the task text when saving
@@ -272,6 +275,7 @@ h1{font-size:1.7rem;font-weight:800;color:var(--deep);margin:.2em 0 .5em}
 .items li{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px dashed var(--line)}
 .items li:last-child{border-bottom:0}
 .txt{flex:1}.txt a{color:var(--blue);font-weight:600}
+.date{display:inline-block;background:#eef3f9;color:var(--brown);border:1px solid var(--line);border-radius:7px;padding:0 7px;font-size:.78rem;font-weight:700;white-space:nowrap;margin-inline-start:2px}
 .save{flex:0 0 auto;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:999px;padding:4px 12px;font-family:inherit;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap;transition:.15s}
 .save:hover{background:var(--blue);color:#fff}
 .save.on{background:var(--brown);border-color:var(--brown);color:#fff}
