@@ -158,6 +158,7 @@ function page({ title, active = '', activeDate = '', main }) {
     ${dates.length ? `<div class="hlabel">היסטוריה (${RETAIN_DAYS} ימים)</div><nav class="hist">${history}</nav>` : ''}
     <nav class="links">
       ${link('/track', 'track', '📋 מעקב יומי')}
+      ${link('/english', 'english', '🇬🇧 אנגלית STE')}
       ${link('/anthropic', 'anthropic', '🅰️ עדכוני Anthropic')}
       ${link('/saved', 'saved', '⭐ משימות שמורות')}
     </nav>
@@ -401,7 +402,7 @@ function renderTrack() {
 }
 
 const TRACK_CSS = `
-.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}.tabs a{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px;color:var(--deep);text-decoration:none;font-weight:600}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}.tabs a{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px;color:var(--head);text-decoration:none;font-weight:600}
 .bar{height:10px;background:var(--line);border-radius:99px;overflow:hidden;margin:4px 0 6px}.bar div{height:100%;background:linear-gradient(90deg,var(--blue),var(--brown))}
 .qbox{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:10px}
 .qhead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-weight:600;color:var(--muted);font-size:.9rem}
@@ -430,6 +431,133 @@ document.addEventListener('click',function(e){var b=e.target.closest('.btn');if(
   if(a==='task-add'){p.project=v('tproj');p.title=v('ttitle');msg='המשימה נוספה ✓'}
   if(a==='income-add'){p.client=v('iclient');p.amount=v('iamount');p.date=v('idate');p.note=v('inote');msg='ההכנסה נרשמה ✓'}
   b.disabled=true;post(p,msg).then(function(ok){b.disabled=false;if(ok)setTimeout(function(){location.reload()},700)})})
+`
+
+// ─── English: ASD-STE100 course (/english) ────────────────────────────────────
+// Same gate as tracker.py: a unit advances only when its exercise was graded correct by
+// Jarvis AND >= 80% of its words were answered right at least twice.
+const EN_MASTERY = 0.8
+const POS_HE = { v: 'פועל', n: 'שם עצם', adj: 'שם תואר', adv: 'תואר הפועל', prep: 'מילת יחס', conj: 'מילת חיבור', pron: 'כינוי', art: 'תווית' }
+const enMastered = (w) => w.known || (w.correct || 0) >= 2
+function enUnitMastery(E, u) {
+  const ids = new Set(u.word_ids || [])
+  if (!ids.size) return 1
+  return E.words.filter((w) => ids.has(w.id) && enMastered(w)).length / ids.size
+}
+function enMaybeAdvance(E) {
+  const u = E.units[E.current_unit - 1]
+  if (!u) return false
+  const passed = E.exercises.some((x) => x.unit === u.n && x.grade === 'correct')
+  if (passed && enUnitMastery(E, u) >= EN_MASTERY && E.current_unit < E.units.length) { E.current_unit++; return true }
+  return false
+}
+function englishAction(a) {
+  const E = tload('english')
+  if (a.action === 'word-result') {
+    const w = E.words.find((x) => x.id === +a.id); if (!w) throw new Error('לא נמצא')
+    w.quizzed = (w.quizzed || 0) + 1
+    if (a.correct) { w.correct = (w.correct || 0) + 1; if (w.correct >= 3) w.known = true }
+    const adv = enMaybeAdvance(E); tsave('english', E); return { advanced: adv, correct: w.correct || 0, quizzed: w.quizzed }
+  }
+  if (a.action === 'en-answer') {
+    const x = [...E.exercises].reverse().find((e) => !e.grade); if (!x) throw new Error('אין תרגיל פתוח')
+    if (!String(a.text || '').trim()) throw new Error('תשובה ריקה')
+    Object.assign(x, { answer: String(a.text).trim(), answered_at: new Date().toISOString().slice(0, 16), via: 'web' })
+    tsave('english', E); return {}
+  }
+  throw new Error('פעולה לא מוכרת')
+}
+
+function renderEnglish() {
+  const E = tload('english')
+  if (!E.units || !E.units.length) return page({ title: 'אנגלית', active: 'english', main: '<h1>🇬🇧 אנגלית</h1><p class="note">הקורס עוד לא נבנה.</p>' })
+  const u = E.units[E.current_unit - 1], ids = new Set(u.word_ids || [])
+  const unitWords = E.words.filter((w) => ids.has(w.id))
+  const mastered = E.words.filter(enMastered).length
+  const m = Math.round(enUnitMastery(E, u) * 100)
+  const ex = [...E.exercises].reverse().find((x) => !x.grade)
+  const passed = E.exercises.some((x) => x.unit === u.n && x.grade === 'correct')
+  const KIND = { words: '🧠 מילים', review: '⚡ חזרה מהירה', rule: '📏 כלל כתיבה' }
+
+  let exHtml
+  if (ex && ex.answer) exHtml = `<div class="qbox"><div class="qtext">${esc(ex.prompt)}</div><div class="ans" dir="ltr">${esc(ex.answer)}</div><p class="note">⏳ ממתין לבדיקה של ג׳ארוויס, המשוב יגיע לטלגרם.</p></div>`
+  else if (ex) {
+    const days = workdaysSince(ex.asked_at), mood = MOODS[Math.min(days, MOODS.length - 1)]
+    exHtml = `<div class="qbox"><div class="qhead"><span>תרגיל · יחידה ${ex.unit}</span><span class="mood">${mood} ${days ? days + ' ימי עבודה בלי תשובה' : 'נשאל היום'}</span></div>
+      <div class="qtext">${esc(ex.prompt)}</div><textarea id="enans" rows="4" dir="ltr" placeholder="Write your answer in STE…"></textarea>
+      <button class="btn" data-en="answer">שלח תשובה</button></div>`
+  } else exHtml = passed ? '<p class="note">✅ התרגיל של היחידה עבר. נשאר להגיע ל־80% בכרטיסיות.</p>' : '<p class="note">ג׳ארוויס ישלח תרגיל משפט ליחידה הזו בתדריך הבוקר.</p>'
+
+  const cards = unitWords.map((w) => `<div class="fc" data-id="${w.id}">
+      <div class="front" dir="ltr"><span class="w">${esc(w.en)}</span><span class="pos">${esc(POS_HE[w.pos] || w.pos)}</span></div>
+      <div class="back"><div class="he">${esc(w.he)}</div><div class="mean" dir="ltr">${esc(w.meaning)}</div>
+        <div class="exm" dir="ltr">${esc(w.example)}</div><div class="exh">${esc(w.example_he || '')}</div>
+        ${w.note ? `<div class="trap" dir="ltr">⚠️ ${esc(w.note)}</div>` : ''}</div>
+      <div class="fcbar"><button data-res="0">✗ לא ידעתי</button><span class="cnt">${w.correct || 0}/${w.quizzed || 0}</span><button data-res="1">✓ ידעתי</button></div>
+    </div>`).join('')
+
+  const unitList = E.units.map((x) => {
+    const st = x.n < E.current_unit ? '✅' : x.n === E.current_unit ? '➤' : '🔒'
+    return `<li class="${x.n === E.current_unit ? 'curl' : ''}"><span>${st} <span class="ln">${x.n}.</span> ${KIND[x.kind] || ''} · ${esc(x.title)}</span>${x.word_ids ? `<span class="note sm">${x.word_ids.length} מילים</span>` : ''}</li>`
+  }).join('')
+
+  const dict = E.words.map((w) => ({ id: w.id, en: w.en, he: w.he, pos: w.pos }))
+  const main = `<style>${TRACK_CSS}${EN_CSS}</style>
+  <h1>🇬🇧 אנגלית טכנית מפושטת (STE)</h1>
+  <p class="note">התקן ASD-STE100: כ־900 מילים מאושרות, לכל מילה משמעות אחת. ההמלצה של קרפתי לכתיבה שקל להבין.</p>
+  <nav class="tabs"><a href="#unit">היחידה שלי</a><a href="#quiz">מבחן</a><a href="#units">כל היחידות</a><a href="#dict">מילון</a></nav>
+  <section class="card" id="unit">
+    <h2>יחידה ${u.n}/${E.units.length} · ${KIND[u.kind] || ''} · ${esc(u.title)}</h2>
+    <div class="bar"><div style="width:${Math.round(mastered / E.words.length * 100)}%"></div></div>
+    <p class="note">${mastered}/${E.words.length} מילים נשלטות בכל הקורס${u.word_ids ? ` · ביחידה: <strong id="um">${m}%</strong> (נדרש 80%)` : ''}</p>
+    ${u.kind === 'rule' ? `<p>ג׳ארוויס מלמד את הכלל הזה מתוך התקן (עמודים ${esc(u.pages)}) ושולח תרגיל כתיבה.</p>` : ''}
+    ${exHtml}
+  </section>
+  ${cards ? `<section class="card"><h2>🃏 כרטיסיות</h2><p class="note">לחץ על כרטיס כדי להפוך אותו. מילה נחשבת נשלטת אחרי שתי תשובות נכונות.</p><div class="fcs">${cards}</div></section>
+  <section class="card" id="quiz"><h2>🎯 מבחן</h2><div class="form"><button class="btn" data-quiz="en">אנגלית ← עברית</button><button class="btn" data-quiz="he">עברית ← אנגלית</button></div><div id="qz"></div></section>` : ''}
+  <section class="card" id="units"><h2>📚 כל היחידות</h2><ul class="items">${unitList}</ul></section>
+  <section class="card" id="dict"><h2>📖 מילון (${E.words.length})</h2><input id="dq" placeholder="חפש מילה באנגלית או בעברית…"><ul class="items" id="dl"></ul></section>
+  <script>var UNIT=${JSON.stringify(unitWords.map((w) => ({ id: w.id, en: w.en, he: w.he })))};var DICT=${JSON.stringify(dict)};</script>
+  <script>${EN_JS}</script>`
+  return page({ title: 'אנגלית STE', active: 'english', main })
+}
+
+const EN_CSS = `
+.fcs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(220px,100%),1fr));gap:12px}
+@media(max-width:760px){.wrap{grid-template-columns:minmax(0,1fr)!important}}
+.fc{border:1px solid var(--line);border-radius:14px;background:var(--soft);padding:12px;cursor:pointer;display:flex;flex-direction:column;gap:8px;min-height:150px}
+.fc .front{display:flex;justify-content:space-between;align-items:baseline}.fc .w{font-size:1.25rem;font-weight:800;color:var(--head)}.fc .pos{color:var(--muted);font-size:.85rem}
+.fc .back{display:none;font-size:.92rem}.fc.open .back{display:block}.he{font-weight:700;font-size:1.05rem}
+.mean{color:var(--muted)}.exm{margin-top:6px;font-style:italic}.exh{color:var(--muted);font-size:.85rem}.trap{margin-top:6px;background:var(--chip);border-radius:8px;padding:4px 8px;font-size:.82rem}
+.fcbar{display:flex;justify-content:space-between;align-items:center;margin-top:auto}.fcbar button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:4px 10px;font:inherit;font-size:.82rem;cursor:pointer}
+.fcbar button[data-res="1"]{border-color:#2d7a3e;color:#2d7a3e}.fcbar button[data-res="0"]{border-color:#b3452f;color:#b3452f}
+.qq{font-size:1.4rem;font-weight:800;margin:10px 0}.opts{display:grid;grid-template-columns:1fr 1fr;gap:8px}.opts button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:10px;font:inherit;cursor:pointer}
+.opts button.ok{background:#2d7a3e;color:#fff}.opts button.no{background:#b3452f;color:#fff}
+`
+const EN_JS = `
+function enpost(p){return fetch('/api/english',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(p)}).then(function(r){return r.json()})}
+function wr(id,ok){return enpost({action:'word-result',id:id,correct:ok}).then(function(j){if(!j.ok){toast(j.error||'שגיאה');return j}if(j.advanced){toast('🎉 עברת ליחידה הבאה!');setTimeout(function(){location.reload()},1200)}return j})}
+document.addEventListener('click',function(e){
+  var r=e.target.closest('[data-res]');if(r){e.stopPropagation();var c=r.closest('.fc');var ok=r.dataset.res==='1';
+    wr(+c.dataset.id,ok).then(function(j){if(j.ok){c.querySelector('.cnt').textContent=j.correct+'/'+j.quizzed;toast(ok?'✓ נרשם':'נרשם, ננסה שוב');c.classList.remove('open')}});return}
+  var f=e.target.closest('.fc');if(f){f.classList.toggle('open');return}
+  var b=e.target.closest('[data-en]');if(b){b.disabled=true;enpost({action:'en-answer',text:document.getElementById('enans').value}).then(function(j){b.disabled=false;if(!j.ok){toast(j.error);return}toast('התשובה נשלחה לג׳ארוויס ✓');setTimeout(function(){location.reload()},800)});return}
+  var q=e.target.closest('[data-quiz]');if(q){quiz(q.dataset.quiz);return}
+})
+function shuffle(a){for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t}return a}
+function quiz(dir){var list=shuffle(UNIT.slice()),i=0,score=0,box=document.getElementById('qz');
+  function next(){if(i>=list.length){box.innerHTML='<p class="qq">'+score+'/'+list.length+'</p><p class="note">התוצאות נרשמו לכל מילה.</p>';return}
+    var w=list[i],key=dir==='en'?'he':'en',pool=shuffle(DICT.filter(function(d){return d.id!==w.id&&d[key]})).slice(0,3);
+    var opts=shuffle(pool.concat([w]));
+    box.innerHTML='<p class="note">'+(i+1)+'/'+list.length+'</p><div class="qq" dir="'+(dir==='en'?'ltr':'rtl')+'">'+(dir==='en'?w.en:w.he)+'</div><div class="opts"></div>';
+    var o=box.querySelector('.opts');opts.forEach(function(x){var bt=document.createElement('button');bt.textContent=x[key];bt.dir=dir==='en'?'rtl':'ltr';
+      bt.onclick=function(){var ok=x.id===w.id;bt.className=ok?'ok':'no';if(!ok){[].forEach.call(o.children,function(c,k){if(opts[k].id===w.id)c.className='ok'})}
+        if(ok)score++;wr(w.id,ok);i++;setTimeout(next,ok?500:1300)};o.appendChild(bt)})}
+  next()}
+var dq=document.getElementById('dq'),dl=document.getElementById('dl');
+function draw(s){s=(s||'').trim().toLowerCase();var r=DICT.filter(function(d){return !s||d.en.toLowerCase().indexOf(s)>=0||(d.he||'').indexOf(s)>=0}).slice(0,60);
+  dl.innerHTML=r.map(function(d){return '<li><span class="txt"><strong dir="ltr">'+d.en+'</strong> <span class="note">('+d.pos+')</span> — '+(d.he||'')+'</span></li>'}).join('')}
+if(dq){dq.oninput=function(){draw(dq.value)};draw('')}
 `
 
 // ─── server ──────────────────────────────────────────────────────────────
@@ -496,6 +624,20 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: e.message }))
     }
+    return
+  }
+  if (req.method === 'POST' && url.pathname === '/api/english') {
+    if (!sameOrigin(req)) { res.writeHead(403).end('forbidden'); return }
+    try {
+      const r = englishAction(await body(req))
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, ...r }))
+    } catch (e) {
+      res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: e.message }))
+    }
+    return
+  }
+  if (url.pathname === '/english') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(renderEnglish())
     return
   }
   if (url.pathname === '/track') {
