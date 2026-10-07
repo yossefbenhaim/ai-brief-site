@@ -18,6 +18,10 @@ const RETAIN_DAYS = parseInt(process.env.RETAIN_DAYS || '7', 10)
 const AUTH_USER = process.env.AUTH_USER || ''
 const AUTH_PASS = process.env.AUTH_PASS || ''
 const SAVED_HEADING = '## Saved from AI Brief'
+// Tracker: same JSON files Jarvis writes through workspace/tracker/tracker.py
+const WS = process.env.WS_DIR || path.dirname(TASKS_FILE)
+const TRACK_DIR = path.join(WS, 'tracker')
+const SYLLABUS = path.join(WS, 'learning', 'system-design', 'syllabus.md')
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
@@ -153,6 +157,7 @@ function page({ title, active = '', activeDate = '', main }) {
     <div class="sub">דרך העדשה שלך</div>
     ${dates.length ? `<div class="hlabel">היסטוריה (${RETAIN_DAYS} ימים)</div><nav class="hist">${history}</nav>` : ''}
     <nav class="links">
+      ${link('/track', 'track', '📋 מעקב יומי')}
       ${link('/anthropic', 'anthropic', '🅰️ עדכוני Anthropic')}
       ${link('/saved', 'saved', '⭐ משימות שמורות')}
     </nav>
@@ -248,6 +253,185 @@ function renderEmpty(title, msg) {
   return page({ title, main: `<h1>${esc(title)}</h1><section class="card"><p class="empty">${esc(msg)}</p></section>` })
 }
 
+
+// ─── tracker (/track) ───────────────────────────────────────────────────────
+// Yossef's side of the tracker. The gate (advancing a lesson) is NOT here: only
+// Jarvis advances, after grading an answer as correct (tracker.py grade).
+const TRACK_DEFAULTS = {
+  learning: { course: 'system-design', current_lesson: 1, lessons: {}, questions: [] },
+  tasks: { projects: ['תפסתי', 'בדיקות כדאיות', 'לקוח חדש', 'אישי'], tasks: [] },
+  income: { entries: [] },
+  english: { words: [] },
+}
+function tload(name) {
+  try { return JSON.parse(fs.readFileSync(path.join(TRACK_DIR, name + '.json'), 'utf8')) }
+  catch { return structuredClone(TRACK_DEFAULTS[name]) }
+}
+function tsave(name, data) {
+  const f = path.join(TRACK_DIR, name + '.json'), tmp = path.join(TRACK_DIR, `.${name}.${process.pid}.tmp`)
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o664 })
+  fs.renameSync(tmp, f)
+}
+const nextId = (arr) => Math.max(0, ...arr.map((x) => x.id || 0)) + 1
+const todayISO = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Jerusalem' })
+function syllabusRows() {
+  try {
+    return fs.readFileSync(SYLLABUS, 'utf8').split('\n').map((l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim()))
+      .filter((c) => c.length === 4 && /^\d+$/.test(c[0])).map((c) => ({ n: +c[0], topic: c[1], pages: c[2] }))
+  } catch { return [] }
+}
+const openQuestion = (L) => [...L.questions].reverse().find((q) => !q.grade)
+function workdaysSince(iso) {
+  let n = 0; const d = new Date(iso + 'T12:00:00'), end = new Date(todayISO() + 'T12:00:00')
+  while (d < end) { d.setDate(d.getDate() + 1); if (d.getDay() !== 5 && d.getDay() !== 6) n++ }
+  return n
+}
+const MOODS = ['🙂', '😐', '😠', '😡', '🤬']
+const GRADE = { correct: ['✅', 'נכון'], partial: ['🟡', 'חלקי'], wrong: ['❌', 'לא נכון'] }
+const ils = (n) => '₪' + Math.round(n).toLocaleString('he-IL')
+
+function trackAction(a) {
+  switch (a.action) {
+    case 'learned': { const L = tload('learning'); const s = (L.lessons[a.n] ||= {}); s.learned = !!a.on; tsave('learning', L); return }
+    case 'answer': {
+      const L = tload('learning'); const q = openQuestion(L)
+      if (!q) throw new Error('אין שאלה פתוחה')
+      if (!String(a.text || '').trim()) throw new Error('תשובה ריקה')
+      Object.assign(q, { answer: String(a.text).trim(), answered_at: new Date().toISOString().slice(0, 16), via: 'web' })
+      tsave('learning', L); return
+    }
+    case 'task-add': {
+      const T = tload('tasks'); if (!String(a.title || '').trim()) throw new Error('כותרת ריקה')
+      T.tasks.push({ id: nextId(T.tasks), project: a.project, title: String(a.title).trim(), done: false, created: todayISO(), updated: todayISO(), note: '' })
+      tsave('tasks', T); return
+    }
+    case 'task-done': {
+      const T = tload('tasks'); const t = T.tasks.find((x) => x.id === +a.id); if (!t) throw new Error('לא נמצא')
+      t.done = !!a.on; t.done_at = a.on ? todayISO() : null; t.updated = todayISO(); tsave('tasks', T); return
+    }
+    case 'income-add': {
+      const I = tload('income'); const amount = parseFloat(a.amount)
+      if (!(amount > 0) || !String(a.client || '').trim()) throw new Error('חסר לקוח או סכום')
+      I.entries.push({ id: nextId(I.entries), date: a.date || todayISO(), client: String(a.client).trim(), amount, note: String(a.note || '') })
+      tsave('income', I); return
+    }
+    case 'word-known': {
+      const E = tload('english'); const w = E.words.find((x) => x.id === +a.id); if (!w) throw new Error('לא נמצא')
+      w.known = !!a.on; tsave('english', E); return
+    }
+    default: throw new Error('פעולה לא מוכרת')
+  }
+}
+
+function renderTrack() {
+  const L = tload('learning'), T = tload('tasks'), I = tload('income'), E = tload('english')
+  const rows = syllabusRows(), cur = L.current_lesson, q = openQuestion(L)
+  const verified = Object.values(L.lessons).filter((s) => s.verified).length
+  const curRow = rows.find((r) => r.n === cur)
+
+  let qHtml
+  if (!q) qHtml = `<p class="note">אין שאלה פתוחה. ג'ארוויס ישאל על <strong>${esc(curRow ? curRow.topic : 'השיעור הבא')}</strong> בתדריך הבוקר הבא.</p>`
+  else if (q.answer) qHtml = `<div class="qbox"><div class="qtext">${esc(q.q)}</div>
+      <div class="ans"><strong>התשובה שלך:</strong> ${esc(q.answer)}</div>
+      <p class="note">⏳ ממתין לבדיקה של ג'ארוויס. התשובה תיבדק תוך כמה דקות והמשוב יגיע לטלגרם.</p></div>`
+  else {
+    const days = workdaysSince(q.asked_at), mood = MOODS[Math.min(days, MOODS.length - 1)]
+    qHtml = `<div class="qbox"><div class="qhead"><span>שאלה פתוחה · שיעור ${q.lesson}</span><span class="mood" title="ימי עבודה בלי תשובה">${mood} ${days ? days + ' ימי עבודה בלי תשובה' : 'נשאלה היום'}</span></div>
+      <div class="qtext">${esc(q.q)}</div>
+      <textarea id="ans" rows="5" placeholder="כתוב כאן את התשובה שלך…"></textarea>
+      <button class="btn" data-act="answer">שלח תשובה</button>
+      <p class="note">הפרק לא מתקדם עד שהתשובה נבדקת ונמצאת נכונה.</p></div>`
+  }
+
+  const lessonList = rows.map((r) => {
+    const s = L.lessons[r.n] || {}
+    const state = s.verified ? '<span class="tag ok">✅ אומת</span>' : r.n === cur ? '<span class="tag cur">➤ עכשיו</span>' : r.n > cur ? '<span class="tag lock">🔒</span>' : ''
+    return `<li class="${r.n === cur ? 'curl' : ''}"><label class="chk"><input type="checkbox" data-act="learned" data-n="${r.n}" ${s.learned ? 'checked' : ''}> <span class="ln">${r.n}.</span> ${esc(r.topic)}</label>${state}</li>`
+  }).join('')
+
+  const history = L.questions.filter((x) => x.grade).slice(-10).reverse().map((x) => {
+    const [ic, lb] = GRADE[x.grade] || ['', x.grade]
+    return `<li class="hist-q"><div><span class="tag">${ic} ${lb}</span> <span class="note">שיעור ${x.lesson} · ${esc(x.graded_at || '')}</span></div>
+      <div class="qtext sm">${esc(x.q)}</div>${x.answer ? `<div class="ans sm">${esc(x.answer)}</div>` : ''}${x.feedback ? `<div class="fb">${esc(x.feedback)}</div>` : ''}</li>`
+  }).join('') || '<li class="empty">עוד אין תשובות שנבדקו.</li>'
+
+  const taskGroups = T.projects.map((p) => {
+    const items = T.tasks.filter((t) => t.project === p).sort((a, b) => a.done - b.done)
+    const li = items.map((t) => `<li><label class="chk ${t.done ? 'done' : ''}"><input type="checkbox" data-act="task-done" data-id="${t.id}" ${t.done ? 'checked' : ''}> ${esc(t.title)}</label>${t.note ? `<span class="note sm">${esc(t.note)}</span>` : ''}</li>`).join('')
+    const open = items.filter((t) => !t.done).length
+    return `<div class="proj"><h3>${esc(p)} <span class="note">${open} פתוחות</span></h3><ul class="items">${li || '<li class="empty">אין משימות.</li>'}</ul></div>`
+  }).join('')
+
+  const month = todayISO().slice(0, 7)
+  const byMonth = {}
+  for (const e of I.entries) byMonth[e.date.slice(0, 7)] = (byMonth[e.date.slice(0, 7)] || 0) + e.amount
+  const incRows = I.entries.filter((e) => e.date.startsWith(month)).reverse().map((e) =>
+    `<li><span class="txt">${esc(e.client)}${e.note ? ` <span class="note">· ${esc(e.note)}</span>` : ''}</span><span class="date">${esc(e.date.slice(8, 10) + '.' + e.date.slice(5, 7))}</span><strong>${ils(e.amount)}</strong></li>`).join('') || '<li class="empty">אין הכנסות החודש עדיין.</li>'
+  const months = Object.keys(byMonth).sort().reverse().slice(0, 6).map((m) => `<span class="chip">${m.slice(5)}/${m.slice(2, 4)}: <strong>${ils(byMonth[m])}</strong></span>`).join('')
+
+  const words = E.words.length ? E.words.map((w) => `<li><label class="chk ${w.known ? 'done' : ''}"><input type="checkbox" data-act="word-known" data-id="${w.id}" ${w.known ? 'checked' : ''}> <strong dir="ltr">${esc(w.en)}</strong>${w.he ? ` — ${esc(w.he)}` : ''}</label><span class="note sm">${w.correct || 0}/${w.quizzed || 0}</span></li>`).join('')
+    : '<li class="empty">הרשימה ריקה. המילים שתשלח ייכנסו לכאן, וג׳ארוויס יבחן אותך על שלוש מילים בכל בוקר.</li>'
+  const known = E.words.filter((w) => w.known).length
+
+  return page({ title: 'מעקב יומי', active: 'track', main: `<style>${TRACK_CSS}</style>
+  <h1>📋 מעקב יומי</h1>
+  <nav class="tabs"><a href="#learn">📘 לימוד</a><a href="#tasks">🗂 משימות</a><a href="#income">💰 הכנסות</a><a href="#english">🇬🇧 אנגלית</a></nav>
+
+  <section class="card" id="learn">
+    <h2>📘 System Design · שיעור ${cur}/${rows.length}</h2>
+    <div class="bar"><div style="width:${rows.length ? Math.round(verified / rows.length * 100) : 0}%"></div></div>
+    <p class="note">${verified} שיעורים אומתו בשאלה · ${Object.values(L.lessons).filter((s) => s.learned).length} סומנו כנלמדו</p>
+    ${qHtml}
+  </section>
+  <section class="card"><h2>🗒 תשובות אחרונות</h2><ul class="items">${history}</ul></section>
+  <section class="card"><h2>📚 כל השיעורים</h2><p class="note">סמן מה למדת. "אומת" מופיע רק אחרי תשובה נכונה לג׳ארוויס.</p><ul class="items lessons">${lessonList}</ul></section>
+
+  <section class="card" id="tasks"><h2>🗂 משימות לפי פרויקט</h2>
+    <div class="form"><select id="tproj">${T.projects.map((p) => `<option>${esc(p)}</option>`).join('')}</select>
+      <input id="ttitle" placeholder="משימה חדשה…"><button class="btn" data-act="task-add">הוסף</button></div>
+    ${taskGroups}</section>
+
+  <section class="card" id="income"><h2>💰 הכנסות · החודש ${ils(byMonth[month] || 0)}</h2>
+    <div class="form"><input id="iclient" placeholder="לקוח / עבודה"><input id="iamount" type="number" min="0" placeholder="סכום ₪"><input id="idate" type="date" value="${todayISO()}"><input id="inote" placeholder="הערה (לא חובה)"><button class="btn" data-act="income-add">הוסף</button></div>
+    <ul class="items">${incRows}</ul><div class="chips">${months}</div></section>
+
+  <section class="card" id="english"><h2>🇬🇧 אנגלית · ${known}/${E.words.length} מילים ידועות</h2>
+    <p class="note">מילה נחשבת ידועה אחרי שלוש תשובות נכונות בבחינת הבוקר, או כשאתה מסמן אותה.</p><ul class="items">${words}</ul></section>
+<script>${TRACK_JS}</script>` })
+}
+
+const TRACK_CSS = `
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}.tabs a{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px;color:var(--deep);text-decoration:none;font-weight:600}
+.bar{height:10px;background:var(--line);border-radius:99px;overflow:hidden;margin:4px 0 6px}.bar div{height:100%;background:linear-gradient(90deg,var(--blue),var(--brown))}
+.qbox{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:10px}
+.qhead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-weight:600;color:var(--muted);font-size:.9rem}
+.mood{font-size:1rem;color:var(--ink)}.qtext{font-weight:600;margin:8px 0;white-space:pre-wrap}.qtext.sm{font-size:.95rem;margin:4px 0}
+.ans{background:var(--card);border-right:3px solid var(--blue);padding:8px 10px;border-radius:0 8px 8px 0;white-space:pre-wrap}.ans.sm{font-size:.9rem}
+.fb{background:var(--soft);border-right:3px solid var(--brown);padding:8px 10px;border-radius:0 8px 8px 0;margin-top:6px;font-size:.92rem;white-space:pre-wrap}
+textarea,input,select{width:100%;font:inherit;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--card);color:var(--ink)}
+.btn{margin-top:8px;border:0;background:var(--blue);color:#fff;border-radius:10px;padding:9px 18px;font:inherit;font-weight:700;cursor:pointer}.btn:hover{background:var(--deep)}
+.form{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px}.form>*{flex:1 1 140px;margin-top:0}.form .btn{flex:0 0 auto}
+.chk{display:flex;gap:8px;align-items:flex-start;flex:1;cursor:pointer}.chk input{width:auto;margin-top:6px;accent-color:var(--blue)}.chk.done{color:var(--muted);text-decoration:line-through}
+.items li{align-items:center}.ln{color:var(--muted);font-weight:700}.curl{background:var(--chip);border-radius:8px}
+.tag{font-size:.78rem;font-weight:700;border-radius:7px;padding:1px 8px;background:var(--chip);white-space:nowrap}.tag.ok{color:#2d7a3e}.tag.cur{color:var(--blue)}.tag.lock{background:none}
+.hist-q{flex-direction:column;align-items:stretch!important;gap:4px}
+.proj h3{font-size:1rem;color:var(--deep);margin:12px 0 2px}.sm{font-size:.85rem}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.chip{background:var(--chip);border-radius:8px;padding:3px 9px;font-size:.85rem}
+.items li strong{white-space:nowrap}
+`
+const TRACK_JS = `
+function post(p,ok){return fetch('/api/track',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(p)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){toast(j.error||'שגיאה');return false}toast(ok);return true}).catch(function(){toast('שגיאת רשת');return false})}
+function v(id){return document.getElementById(id).value}
+document.addEventListener('change',function(e){var c=e.target;if(c.type!=='checkbox')return;var a=c.dataset.act;
+  var p={action:a,on:c.checked,n:c.dataset.n,id:c.dataset.id};
+  post(p,c.checked?'נשמר ✓':'בוטל').then(function(ok){if(!ok){c.checked=!c.checked;return}var l=c.closest('.chk');if(l&&a!=='learned')l.classList.toggle('done',c.checked)})})
+document.addEventListener('click',function(e){var b=e.target.closest('.btn');if(!b)return;var a=b.dataset.act,p={action:a},msg='נשמר ✓';
+  if(a==='answer'){p.text=v('ans');msg='התשובה נשלחה לג׳ארוויס ✓'}
+  if(a==='task-add'){p.project=v('tproj');p.title=v('ttitle');msg='המשימה נוספה ✓'}
+  if(a==='income-add'){p.client=v('iclient');p.amount=v('iamount');p.date=v('idate');p.note=v('inote');msg='ההכנסה נרשמה ✓'}
+  b.disabled=true;post(p,msg).then(function(ok){b.disabled=false;if(ok)setTimeout(function(){location.reload()},700)})})
+`
+
 // ─── server ──────────────────────────────────────────────────────────────
 function unauthorized(res) {
   res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="AI Brief"' }).end('Auth required')
@@ -304,6 +488,20 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/track') {
+    if (!sameOrigin(req)) { res.writeHead(403).end('forbidden'); return }
+    try {
+      trackAction(await body(req))
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+    } catch (e) {
+      res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: e.message }))
+    }
+    return
+  }
+  if (url.pathname === '/track') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(renderTrack())
+    return
+  }
   if (url.pathname === '/anthropic') return html(res, 200, renderAnthropic(savedSet()))
   if (url.pathname === '/saved') return html(res, 200, renderSaved())
 
