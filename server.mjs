@@ -157,6 +157,7 @@ function page({ title, active = '', activeDate = '', main }) {
     <div class="sub">דרך העדשה שלך</div>
     ${dates.length ? `<div class="hlabel">היסטוריה (${RETAIN_DAYS} ימים)</div><nav class="hist">${history}</nav>` : ''}
     <nav class="links">
+      ${link('/features', 'features', '🏗️ פיצ׳רים ומשאבים')}
       ${link('/track', 'track', '📋 מעקב יומי')}
       ${link('/english', 'english', '🇬🇧 אנגלית STE')}
       ${link('/anthropic', 'anthropic', '🅰️ עדכוני Anthropic')}
@@ -560,6 +561,150 @@ function draw(s){s=(s||'').trim().toLowerCase();var r=DICT.filter(function(d){re
 if(dq){dq.oninput=function(){draw(dq.value)};draw('')}
 `
 
+// ─── Features board (/features) ───────────────────────────────────────────────
+// Reads tracker/features.json (written by tracker.py and feature-run.sh) and
+// tracker/resources.jsonl (resource-collect.py). The only write here is approving or
+// rejecting a gate. Stages themselves are moved by feature-driver.py on the host.
+const STAGES = ['קליטה', 'אפיון', 'מסר ושיווק', 'עיצוב', 'תכנון טכני', 'מודל איומים', 'תוכנית בדיקות', 'פיתוח', 'אימות', 'השקה', 'סיכום']
+const GATE_AT = { client: 3, build: 7, release: 9 }
+const GATE_NAME = { client: 'אישור לקוח', build: 'אישור פיתוח', release: 'אישור העלאה' }
+const PROJ = { tafasti: 'תפסתי', feasibility: 'בדיקות כדאיות', 'new-client': 'לקוח חדש', personal: 'אישי', 'shared-db': 'מסד נתונים משותף', agents: 'פלטפורמת הסוכנים' }
+const AGENT_HE = { main: 'ג׳ארוויס', vision: 'ויז׳ן', hawkeye: 'הוקאיי', shield: 'שילד', editor: 'העורך', phoenix: 'פניקס', social: 'סושיאל' }
+const SHORT_PATH = [0, 1, 4, 7, 8, 10]
+const fmtK = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : String(n)
+const runTokens = (r) => (r.input || 0) + (r.output || 0) + (r.cache_write || 0)
+
+function loadResources() {
+  try {
+    return fs.readFileSync(path.join(TRACK_DIR, 'resources.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  } catch { return [] }
+}
+function spark(vals, w = 220, h = 36) {
+  if (vals.length < 2) return ''
+  const max = Math.max(...vals, 0.0001)
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1) * w).toFixed(1)},${(h - v / max * (h - 2) - 1).toFixed(1)}`).join(' ')
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="1.6" points="${pts}"/></svg>`
+}
+function pendingGate(f) {
+  const pathS = f.track === 'short' ? SHORT_PATH : STAGES.map((_, i) => i)
+  const nxt = pathS.find((x) => x > f.stage)
+  if (nxt === undefined) return null
+  return Object.keys(GATE_AT).find((g) => f.stage < GATE_AT[g] && GATE_AT[g] <= nxt && !['approved', 'skipped'].includes(f.gates[g].status)) || null
+}
+
+function featuresAction(a) {
+  const F = tload('features')
+  const f = (F.features || []).find((x) => x.id === a.id); if (!f) throw new Error('פיצ׳ר לא נמצא')
+  if (a.action !== 'gate' || !GATE_AT[a.gate] || !['approved', 'rejected'].includes(a.status)) throw new Error('פעולה לא מוכרת')
+  if (pendingGate(f) !== a.gate) throw new Error('הפיצ׳ר לא ממתין לשער הזה')
+  f.gates[a.gate] = { status: a.status, date: todayISO(), note: 'מהלוח' }
+  tsave('features', F)
+}
+
+function renderFeatures() {
+  const F = tload('features'), feats = F.features || []
+  let driver = {}
+  try { driver = JSON.parse(fs.readFileSync(path.join(TRACK_DIR, '.driver-state.json'), 'utf8')) } catch {}
+  const R = loadResources(), now = Math.floor(Date.now() / 1000)
+  const day = R.filter((s) => s.ts >= now - 86400), last = R[R.length - 1]
+  const week = now - 7 * 86400
+
+  const projKeys = ['tafasti', 'feasibility', 'new-client', 'personal'].filter((p) => feats.some((f) => f.project === p) || (last && last.projects[p]))
+  const resCards = ['tafasti', 'feasibility', 'agents', 'shared-db'].filter((p) => last && last.projects[p]).map((p) => {
+    const cur = last.projects[p], cpu = day.map((s) => (s.projects[p] || {}).cpu || 0), mem = day.map((s) => (s.projects[p] || {}).mem_mib || 0)
+    const peak = Math.max(...cpu, 0), avg = cpu.length ? cpu.reduce((a, b) => a + b, 0) / cpu.length : 0
+    const tok = feats.filter((f) => f.project === p).flatMap((f) => f.runs).filter((r) => r.at >= new Date(week * 1000).toISOString().slice(0, 16)).reduce((a, r) => a + runTokens(r), 0)
+    return `<div class="res"><h3>${esc(PROJ[p] || p)}</h3>
+      <div class="kv"><span>מעבד עכשיו</span><strong>${cur.cpu.toFixed(1)}%</strong></div>
+      <div class="kv"><span>ממוצע / שיא</span><strong>${avg.toFixed(1)}% / ${peak.toFixed(1)}%</strong></div>
+      <div class="sp cpu">${spark(cpu)}</div>
+      <div class="kv"><span>זיכרון</span><strong>${Math.round(cur.mem_mib)} MB</strong></div>
+      <div class="sp mem">${spark(mem)}</div>
+      <div class="kv"><span>${p === 'agents' ? 'תהליכים' : 'קונטיינרים'}</span><strong>${cur.containers}</strong></div>
+      ${PROJ[p] && !['agents', 'shared-db'].includes(p) ? `<div class="kv"><span>אסימונים של סוכנים (7 ימים)</span><strong>${fmtK(tok)}</strong></div>` : ''}
+    </div>`
+  }).join('')
+
+  const featCards = feats.slice().reverse().map((f) => {
+    const pathS = f.track === 'short' ? SHORT_PATH : STAGES.map((_, i) => i)
+    const steps = pathS.map((i) => {
+      const gate = Object.keys(GATE_AT).find((g) => GATE_AT[g] === i && f.gates[g].status !== 'skipped')
+      const gateHtml = gate ? `<span class="gt ${f.gates[gate].status}" title="${GATE_NAME[gate]}">🚦</span>` : ''
+      return `${gateHtml}<span class="st ${i < f.stage || f.done ? 'ok' : i === f.stage ? 'cur' : ''}" title="${esc(STAGES[i])}">${esc(STAGES[i])}</span>`
+    }).join('')
+    // show a gate only once the driver announced it (the stage before it is finished)
+    const pg = f.done ? null : pendingGate(f)
+    const announced = pg && ((driver[f.id] || {}).notified || []).includes(pg)
+    const byStage = {}
+    for (const r of f.runs) {
+      const k = r.stage + '|' + r.agent; byStage[k] ||= { stage: r.stage, agent: r.agent, n: 0, tok: 0, ms: 0, fail: 0 }
+      const b = byStage[k]; b.n++; b.tok += runTokens(r); b.ms += r.ms || 0; if (r.ok === false) b.fail++
+    }
+    const rows = Object.values(byStage).sort((a, b) => a.stage - b.stage).map((b) =>
+      `<tr><td>${esc(STAGES[b.stage])}</td><td>${esc(AGENT_HE[b.agent] || b.agent)}</td><td>${b.n}${b.fail ? ` <span class="bad">(${b.fail} נכשלו)</span>` : ''}</td><td>${fmtK(b.tok)}</td><td>${Math.round(b.ms / 60000)} דק׳</td></tr>`).join('')
+    const total = f.runs.reduce((a, r) => a + runTokens(r), 0)
+    return `<section class="card feat">
+      <div class="fh"><h2>${esc(f.id)} · ${esc(f.title)}</h2><span class="tag">${esc(PROJ[f.project] || f.project)} · ${f.track === 'short' ? 'מסלול קצר' : 'מסלול מלא'} · ${f.intake === 'B' ? 'חומר מהלקוח' : 'דרישה ממך'}</span></div>
+      <div class="steps">${steps}</div>
+      ${f.done ? '<p class="note">✅ הושלם</p>' : announced ? `<div class="gatebox">🚦 ממתין: <strong>${GATE_NAME[pg]}</strong>
+        <button class="btn" data-gate="${pg}" data-id="${esc(f.id)}" data-status="approved">מאשר</button>
+        <button class="btn ghost" data-gate="${pg}" data-id="${esc(f.id)}" data-status="rejected">לא מאשר</button></div>`
+        : `<p class="note">עכשיו: <strong>${esc(STAGES[f.stage])}</strong></p>`}
+      <details><summary>משאבים: ${f.runs.length} הרצות · ${fmtK(total)} אסימונים</summary>
+        ${rows ? `<table class="rt"><tr><th>שלב</th><th>סוכן</th><th>הרצות</th><th>אסימונים</th><th>זמן</th></tr>${rows}</table>` : '<p class="note">עוד אין הרצות.</p>'}</details>
+      <a class="src" href="/features/${encodeURIComponent(f.id)}">📄 תיק הפיצ׳ר המלא</a>
+    </section>`
+  }).join('') || '<section class="card"><p class="empty">אין עדיין פיצ׳רים. כתוב לג׳ארוויס "פיצ׳ר חדש לתפסתי: …" והצוות יתחיל.</p></section>'
+
+  const main = `<style>${TRACK_CSS}${FEAT_CSS}</style>
+  <h1>🏗️ פיצ׳רים ומשאבים</h1>
+  <p class="note">כל פיצ׳ר עובר אפיון, מסר, עיצוב, תכנון, אבטחה, בדיקות, פיתוח, אימות והשקה. 🚦 = החלטה שלך או של הלקוח.</p>
+  ${featCards}
+  <section class="card"><h2>📊 משאבים לפי פרויקט · 24 שעות</h2><div class="resgrid">${resCards || '<p class="note">אין עדיין מדידות.</p>'}</div>
+    <p class="note sm">נמדד כל 5 דקות. אסימונים = קלט + פלט + כתיבה למטמון, בלי קריאה מהמטמון.</p></section>
+  <script>${FEAT_JS}</script>`
+  return page({ title: 'פיצ׳רים ומשאבים', active: 'features', main })
+}
+
+function renderDossier(id) {
+  const f = (tload('features').features || []).find((x) => x.id === id)
+  if (!f) return null
+  let md = ''
+  try { md = fs.readFileSync(f.dossier.replace(/^.*\/\.openclaw\/workspace\//, WS + '/'), 'utf8') } catch { md = '(התיק לא נגיש מהאתר)' }
+  const html = md.split('\n').map((l) => {
+    if (/^# /.test(l)) return `<h1>${inline(l.slice(2))}</h1>`
+    if (/^## /.test(l)) return `<h2>${inline(l.slice(3))}</h2>`
+    if (/^### /.test(l)) return `<h3>${inline(l.slice(4))}</h3>`
+    if (/^\s*[-*] /.test(l)) return `<li>${inline(l.replace(/^\s*[-*] /, ''))}</li>`
+    if (/^\|/.test(l)) return `<div class="mdrow" dir="auto">${esc(l)}</div>`
+    return l.trim() ? `<p dir="auto">${inline(l)}</p>` : ''
+  }).join('\n')
+  return page({ title: f.id, active: 'features', main: `<style>${TRACK_CSS}${FEAT_CSS}</style><a class="back" href="/features">→ לוח הפיצ׳רים</a><section class="card dossier">${html}</section>` })
+}
+
+const FEAT_CSS = `
+.fh{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline}
+.steps{display:flex;flex-wrap:wrap;gap:4px;margin:10px 0}.st{font-size:.78rem;border-radius:7px;padding:2px 8px;background:var(--chip);color:var(--muted)}
+.st.ok{background:#2d7a3e;color:#fff}.st.cur{background:var(--blue);color:#fff;font-weight:700}
+.gt{font-size:.85rem;opacity:.45}.gt.approved{opacity:1}.gt.pending{opacity:1;filter:saturate(2)}.gt.rejected{filter:grayscale(1)}
+.gatebox{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.gatebox .btn{margin-top:0}.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+details{margin-top:10px}summary{cursor:pointer;color:var(--muted);font-weight:600}
+.rt{width:100%;border-collapse:collapse;margin-top:6px;font-size:.88rem}.rt td,.rt th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:right}.bad{color:#b3452f}
+.resgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(230px,100%),1fr));gap:12px}
+.res{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--soft)}.res h3{margin:0 0 6px;font-size:1rem;color:var(--head)}
+.kv{display:flex;justify-content:space-between;font-size:.88rem;padding:2px 0}.sp{color:var(--blue);max-width:100%;overflow:hidden}.sp.mem{color:var(--brown)}.spark{max-width:100%;height:auto}
+.dossier h1{font-size:1.4rem}.dossier h2{font-size:1.1rem;margin-top:1.2em}.dossier li{margin-inline-start:1.2em}.mdrow{font-family:monospace;font-size:.82rem;white-space:pre-wrap}
+@media(max-width:760px){.wrap{grid-template-columns:minmax(0,1fr)!important}}
+`
+const FEAT_JS = `
+document.addEventListener('click',function(e){var b=e.target.closest('[data-gate]');if(!b)return;
+  if(b.dataset.status==='rejected'&&!confirm('לעצור את הפיצ׳ר?'))return;b.disabled=true;
+  fetch('/api/features',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'gate',id:b.dataset.id,gate:b.dataset.gate,status:b.dataset.status})})
+   .then(function(r){return r.json()}).then(function(j){b.disabled=false;if(!j.ok){toast(j.error||'שגיאה');return}
+     toast(b.dataset.status==='approved'?'אושר ✓ הצוות ממשיך תוך 10 דקות':'הפיצ׳ר נעצר');setTimeout(function(){location.reload()},900)}).catch(function(){b.disabled=false;toast('שגיאת רשת')})})
+`
+
 // ─── server ──────────────────────────────────────────────────────────────
 function unauthorized(res) {
   res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="AI Brief"' }).end('Auth required')
@@ -634,6 +779,26 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: e.message }))
     }
+    return
+  }
+  if (req.method === 'POST' && url.pathname === '/api/features') {
+    if (!sameOrigin(req)) { res.writeHead(403).end('forbidden'); return }
+    try {
+      featuresAction(await body(req))
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+    } catch (e) {
+      res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: e.message }))
+    }
+    return
+  }
+  if (url.pathname === '/features') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(renderFeatures())
+    return
+  }
+  if (url.pathname.startsWith('/features/')) {
+    const h = renderDossier(decodeURIComponent(url.pathname.slice(10)))
+    if (!h) { res.writeHead(404).end('not found'); return }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(h)
     return
   }
   if (url.pathname === '/english') {
